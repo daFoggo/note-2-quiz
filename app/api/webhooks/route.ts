@@ -1,40 +1,24 @@
 import { db } from "@/lib/db/db";
 import { users } from "@/lib/db/schema";
+import { IClerkUser } from "@/lib/types/user";
 import { verifyWebhook } from "@clerk/nextjs/webhooks";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
-// Types cho Clerk webhook events
-interface ClerkUser {
-  id: string;
-  email_addresses: Array<{
-    email_address: string;
-    id: string;
-  }>;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-  image_url?: string;
-  created_at: number;
-  updated_at: number;
-}
-
-interface WebhookEvent {
-  data: ClerkUser;
+interface IWebhookEvent {
+  data: IClerkUser;
   object: string;
   type: string;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Verify webhook signature
-    const evt = (await verifyWebhook(req)) as WebhookEvent;
+    const evt = (await verifyWebhook(req)) as IWebhookEvent;
 
     const { type } = evt;
     const userData = evt.data;
 
-    console.log(`Processing webhook: ${type} for user ${userData.id}`);
-
+    // listen to webhooks events to sync db
     switch (type) {
       case "user.created":
         await handleUserCreated(userData);
@@ -62,7 +46,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function handleUserCreated(userData: ClerkUser) {
+async function handleUserCreated(userData: IClerkUser) {
   try {
     const primaryEmail =
       userData.email_addresses.find((email) => email.id === userData.id)
@@ -83,15 +67,13 @@ async function handleUserCreated(userData: ClerkUser) {
       createdAt: new Date(userData.created_at),
       updatedAt: new Date(userData.updated_at),
     });
-
-    console.log(`✅ User created: ${userData.id} (${primaryEmail})`);
   } catch (error) {
     console.error("Error creating user:", error);
     throw error;
   }
 }
 
-async function handleUserUpdated(userData: ClerkUser) {
+async function handleUserUpdated(userData: IClerkUser) {
   try {
     const primaryEmail =
       userData.email_addresses.find((email) => email.id === userData.id)
@@ -114,41 +96,34 @@ async function handleUserUpdated(userData: ClerkUser) {
       })
       .where(eq(users.id, userData.id));
 
-    console.log(`✅ User updated: ${userData.id} (${primaryEmail})`);
+    console.log(`User updated: ${userData.id} (${primaryEmail})`);
   } catch (error) {
     console.error("Error updating user:", error);
     throw error;
   }
 }
 
-async function handleUserDeleted(userData: ClerkUser) {
+async function handleUserDeleted(userData: IClerkUser) {
   try {
-    // Note: Khi user bị xóa, do có foreign key constraints,
-    // bạn có thể muốn soft delete thay vì hard delete
-    // Hoặc có thể cascade delete nếu đã setup trong schema
+    // hard delete user
+    // await db.delete(users).where(eq(users.id, userData.id));
 
-    // Option 1: Hard delete (nếu có CASCADE setup)
-    await db.delete(users).where(eq(users.id, userData.id));
+    //  Soft delete (recommended)
+    await db
+      .update(users)
+      .set({
+        email: `deleted_${userData.id}@deleted.com`,
+      })
+      .where(eq(users.id, userData.id));
 
-    // Option 2: Soft delete (recommended)
-    // await db
-    //   .update(users)
-    //   .set({
-    //     deletedAt: new Date(),
-    //     email: `deleted_${userData.id}@deleted.com`, // Avoid unique constraint issues
-    //   })
-    //   .where(eq(users.id, userData.id))
-
-    console.log(`✅ User deleted: ${userData.id}`);
+    console.log(`User deleted: ${userData.id}`);
   } catch (error) {
     console.error("Error deleting user:", error);
     throw error;
   }
 }
 
-// Helper function để tạo tên người dùng
-function getUserName(userData: ClerkUser): string {
-  // Priority: first_name + last_name > username > email
+function getUserName(userData: IClerkUser): string {
   if (userData.first_name && userData.last_name) {
     return `${userData.first_name} ${userData.last_name}`.trim();
   }
@@ -161,7 +136,6 @@ function getUserName(userData: ClerkUser): string {
     return userData.username;
   }
 
-  // Fallback to email prefix
   const primaryEmail = userData.email_addresses[0]?.email_address;
   if (primaryEmail) {
     return primaryEmail.split("@")[0];
@@ -170,8 +144,7 @@ function getUserName(userData: ClerkUser): string {
   return "Unknown User";
 }
 
-// Optional: Add middleware để handle CORS nếu cần
-export async function OPTIONS(req: NextRequest) {
+export async function OPTIONS() {
   return new Response(null, {
     status: 200,
     headers: {
